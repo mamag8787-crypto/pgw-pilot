@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import os
 import shutil
 from typing import AsyncIterator
@@ -48,22 +49,25 @@ class CodexEngine:
         self._sem = asyncio.Semaphore(concurrency or _env_int("CONCURRENCY", 2))
 
     async def stream(self, prompt: str) -> AsyncIterator[str]:
-        """Выполняет прогон и стримит куски stdout по мере готовности."""
+        """Выполняет прогон и стримит куски stdout по мере готовности.
+
+        Промпт передаётся аргументом (не stdin): так он доезжает до модели
+        байт-в-байт в UTF-8 независимо от локали. Вывод декодируется
+        инкрементальным декодером, чтобы многобайтовые символы не резались
+        по границам 256-байтовых чанков.
+        """
         if not prompt.strip():
             raise EngineError("Пустой промпт")
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         async with self._sem:
             proc = await asyncio.create_subprocess_exec(
-                self.bin, "exec", *self.extra_args,
-                stdin=asyncio.subprocess.PIPE,
+                self.bin, "exec", *self.extra_args, prompt,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             try:
-                assert proc.stdin is not None and proc.stdout is not None
-                proc.stdin.write(prompt.encode("utf-8"))
-                await proc.stdin.drain()
-                proc.stdin.close()
-
+                assert proc.stdout is not None
                 produced = 0
                 try:
                     async with asyncio.timeout(self.timeout):
@@ -71,13 +75,16 @@ class CodexEngine:
                             chunk = await proc.stdout.read(256)
                             if not chunk:
                                 break
-                            text = chunk.decode("utf-8", errors="replace")
+                            text = decoder.decode(chunk)
                             produced += len(text)
                             yield text
                             if produced >= self.max_output:
                                 break
                 except TimeoutError:
                     raise EngineError(f"Таймаут прогона ({self.timeout} с)") from None
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    yield tail
 
                 rc = await proc.wait()
                 if rc != 0:
