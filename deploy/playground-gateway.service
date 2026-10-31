@@ -1,0 +1,15 @@
+[Unit]
+Description=Playground gateway (обкатка промптов портала)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/playground-gateway
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=%h/playground-gateway.env
+ExecStart=%h/playground-gateway/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8787
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
